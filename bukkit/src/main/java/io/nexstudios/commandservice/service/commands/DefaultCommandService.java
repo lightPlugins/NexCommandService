@@ -1,7 +1,11 @@
 package io.nexstudios.commandservice.service.commands;
 
+import io.nexstudios.commandservice.service.commands.annotations.CommandRoot;
 import io.nexstudios.commandservice.service.commands.factory.BrigadierCommandRegistrar;
+import io.nexstudios.commandservice.service.commands.factory.CommandModel;
 import io.nexstudios.commandservice.service.commands.factory.CommandModelBuilder;
+import io.nexstudios.commandservice.service.commands.factory.model.CmdNode;
+import io.nexstudios.commandservice.service.commands.factory.util.CommandUtils;
 import io.nexstudios.serviceregistry.di.Service;
 import io.nexstudios.serviceregistry.di.ServiceAccessor;
 import io.papermc.paper.command.brigadier.Commands;
@@ -23,6 +27,10 @@ public final class DefaultCommandService implements CommandService {
 
   private final List<Object> handlers = new CopyOnWriteArrayList<>();
   private final ConcurrentHashMap<Object, Long> lastRegisteredEpoch = new ConcurrentHashMap<>();
+
+  private final ConcurrentHashMap<String, RootAggregate> roots = new ConcurrentHashMap<>();
+
+  private record RootAggregate(CommandRoot rootAnn, CmdNode root) {}
 
   public DefaultCommandService(ServiceAccessor services) {
     this.services = Objects.requireNonNull(services, "services");
@@ -71,7 +79,44 @@ public final class DefaultCommandService implements CommandService {
   }
 
   private void registerHandler(Object handler) {
-    var model = CommandModelBuilder.build(handler);
-    BrigadierCommandRegistrar.register(services, commands, model);
+    CommandRoot rootAnn = handler.getClass().getAnnotation(CommandRoot.class);
+    if (rootAnn == null) {
+      throw new IllegalStateException("Missing @CommandRoot on " + handler.getClass().getName());
+    }
+
+    RootAggregate agg = roots.compute(rootAnn.name(), (name, existing) -> {
+      if (existing == null) {
+        CmdNode root = CmdNode.root(rootAnn.name());
+        root.permission = CommandUtils.normalizePerm(rootAnn.permission());
+        root.playerOnly = rootAnn.playerOnly();
+
+        CommandModelBuilder.buildInto(handler, root, rootAnn);
+        return new RootAggregate(rootAnn, root);
+      }
+
+      assertCompatibleRoot(existing.rootAnn(), rootAnn);
+      CommandModelBuilder.buildInto(handler, existing.root(), rootAnn);
+      return existing;
+    });
+
+    BrigadierCommandRegistrar.register(services, commands, new CommandModel(agg.rootAnn(), agg.root()));
+  }
+
+  private static void assertCompatibleRoot(CommandRoot a, CommandRoot b) {
+    if (!Objects.equals(a.name(), b.name())) {
+      throw new IllegalStateException("Internal error: root names differ while merging: " + a.name() + " vs " + b.name());
+    }
+    if (!Objects.equals(a.description(), b.description())) {
+      throw new IllegalStateException("Conflicting @CommandRoot.description for '" + a.name() + "'");
+    }
+    if (!Objects.equals(CommandUtils.normalizePerm(a.permission()), CommandUtils.normalizePerm(b.permission()))) {
+      throw new IllegalStateException("Conflicting @CommandRoot.permission for '" + a.name() + "'");
+    }
+    if (a.playerOnly() != b.playerOnly()) {
+      throw new IllegalStateException("Conflicting @CommandRoot.playerOnly for '" + a.name() + "'");
+    }
+    if (!java.util.Arrays.equals(a.aliases(), b.aliases())) {
+      throw new IllegalStateException("Conflicting @CommandRoot.aliases for '" + a.name() + "'");
+    }
   }
 }

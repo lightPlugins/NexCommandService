@@ -23,11 +23,21 @@ public final class CommandModelBuilder {
       throw new IllegalStateException("Missing @CommandRoot on " + handler.getClass().getName());
     }
 
-    List<Method> commandMethods = CommandMethodScanner.findCommandMethods(handler.getClass());
-
     CmdNode root = CmdNode.root(rootAnn.name());
     root.permission = CommandUtils.normalizePerm(rootAnn.permission());
     root.playerOnly = rootAnn.playerOnly();
+
+    buildInto(handler, root, rootAnn);
+
+    return new CommandModel(rootAnn, root);
+  }
+
+  public static void buildInto(Object handler, CmdNode root, CommandRoot rootAnn) {
+    if (rootAnn == null) {
+      throw new IllegalStateException("Missing @CommandRoot on " + handler.getClass().getName());
+    }
+
+    List<Method> commandMethods = CommandMethodScanner.findCommandMethods(handler.getClass());
 
     for (Method m : commandMethods) {
       Command ann = m.getAnnotation(Command.class);
@@ -63,8 +73,6 @@ public final class CommandModelBuilder {
       }
       current.exec = new Exec(handler, m, CommandUtils.normalizePerm(ann.permission()), ann.playerOnly());
     }
-
-    return new CommandModel(rootAnn, root);
   }
 
   private static ArgSpec resolveArgSpec(Method method, String argName, boolean greedyFromPath) {
