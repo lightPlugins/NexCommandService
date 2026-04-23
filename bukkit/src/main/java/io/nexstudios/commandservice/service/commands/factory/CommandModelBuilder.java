@@ -53,9 +53,31 @@ public final class CommandModelBuilder {
 
       String[] parts = path.split("\\s+");
       CmdNode current = root;
+      boolean handledByOptional = false;
 
       for (int i = 0; i < parts.length; i++) {
         String token = parts[i];
+
+        if (ArgParsing.isOptionalArgToken(token)) {
+          String argName = ArgParsing.parseOptionalArgToken(token);
+          ArgParsing.assertOptionalLast(argName, i, parts.length, m);
+
+          Exec exec = new Exec(handler, m, CommandUtils.normalizePerm(ann.permission()), ann.playerOnly());
+
+          // The current node becomes executable WITHOUT the optional arg
+          if (current.exec == null) {
+            current.exec = exec;
+          }
+
+          // Then descend into the optional arg child (executable WITH the arg)
+          current = current.childArg(argName, resolveOptionalArgSpec(m, argName));
+          if (current.exec != null) {
+            throw new IllegalStateException("Duplicate command path '" + path + "' (already mapped) in: " + m);
+          }
+          current.exec = exec;
+          handledByOptional = true;
+          continue;
+        }
 
         if (ArgParsing.isArgToken(token)) {
           ArgParsing.ArgToken arg = ArgParsing.parseArgToken(token);
@@ -67,6 +89,9 @@ public final class CommandModelBuilder {
 
         current = current.childLiteral(token);
       }
+
+      // Skip post-loop exec assignment when the optional arg already set it
+      if (handledByOptional) continue;
 
       if (current.exec != null) {
         throw new IllegalStateException("Duplicate command path '" + path + "' (already mapped) in: " + m);
@@ -88,6 +113,20 @@ public final class CommandModelBuilder {
       suggestClass = OnlinePlayersSuggestion.class;
     }
 
-    return new ArgSpec(type, greedy, suggestClass);
+    return new ArgSpec(type, greedy, false, suggestClass);
+  }
+
+  private static ArgSpec resolveOptionalArgSpec(Method method, String argName) {
+    Parameter param = ArgParsing.findOptionalArgParameter(method, argName);
+    Class<?> type = param.getType();
+
+    Suggest suggest = param.getAnnotation(Suggest.class);
+    Class<? extends SuggestionProvider> suggestClass = (suggest == null) ? null : suggest.value();
+
+    if (suggestClass == null && param.isAnnotationPresent(SuggestPlayers.class)) {
+      suggestClass = OnlinePlayersSuggestion.class;
+    }
+
+    return new ArgSpec(type, false, true, suggestClass);
   }
 }

@@ -6,6 +6,7 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import io.nexstudios.commandservice.service.commands.annotations.Arg;
+import io.nexstudios.commandservice.service.commands.annotations.OptionalArg;
 import io.nexstudios.commandservice.service.commands.source.DefaultNexPaperCommandSource;
 import io.nexstudios.commandservice.service.commands.source.NexPaperCommandSource;
 import io.nexstudios.commandservice.service.commands.util.DurationParsing;
@@ -56,8 +57,15 @@ final class CommandInvoker {
       }
 
       Arg a = p.getAnnotation(Arg.class);
-      if (a == null) {
-        throw new IllegalStateException("Missing @Arg on parameter " + p.getName() + " in " + method);
+      OptionalArg oa = p.getAnnotation(OptionalArg.class);
+
+      if (a == null && oa == null) {
+        throw new IllegalStateException("Missing @Arg or @OptionalArg on parameter " + p.getName() + " in " + method);
+      }
+
+      if (oa != null) {
+        out[i] = resolveOptionalArg(ctx, oa, t);
+        continue;
       }
 
       String name = a.value();
@@ -126,5 +134,58 @@ final class CommandInvoker {
   private static Enum<?> enumValueOfUnchecked(Class<?> enumType, String name) {
     Class<? extends Enum> c = enumType.asSubclass(Enum.class);
     return Enum.valueOf(c, name);
+  }
+
+  // ── optional arg resolution ─────────────────────────────────────────────
+
+  private static Object resolveOptionalArg(CommandContext<CommandSourceStack> ctx, OptionalArg oa, Class<?> t) {
+    String argName = oa.value();
+    String explicitDefault = oa.defaultValue();
+
+    try {
+      // Try to read the value – succeeds when the optional arg was provided
+      return readArgFromCtx(ctx, argName, t);
+    } catch (IllegalArgumentException ignored) {
+      // Arg was not in the context (command executed without optional arg)
+      return parseDefaultValue(t, argName, explicitDefault);
+    }
+  }
+
+  private static Object readArgFromCtx(CommandContext<CommandSourceStack> ctx, String name, Class<?> t) {
+    if (t == String.class)                               return StringArgumentType.getString(ctx, name);
+    if (t == int.class || t == Integer.class)            return IntegerArgumentType.getInteger(ctx, name);
+    if (t == double.class || t == Double.class)          return DoubleArgumentType.getDouble(ctx, name);
+    if (t == boolean.class || t == Boolean.class)        return BoolArgumentType.getBool(ctx, name);
+    if (t == Player.class) {
+      String playerName = StringArgumentType.getString(ctx, name);
+      Player player = Bukkit.getPlayerExact(playerName);
+      if (player == null) throw new IllegalStateException("Player not found: " + playerName);
+      return player;
+    }
+    if (t.isEnum()) {
+      String raw = StringArgumentType.getString(ctx, name);
+      return parseEnumOrThrow(t, name, raw);
+    }
+    if (t == Duration.class) {
+      String raw = StringArgumentType.getString(ctx, name);
+      return DurationParsing.parse(raw);
+    }
+    throw new IllegalStateException("Unsupported @OptionalArg parameter type: " + t.getName());
+  }
+
+  private static Object parseDefaultValue(Class<?> t, String argName, String explicitDefault) {
+    boolean hasExplicit = explicitDefault != null && !explicitDefault.isEmpty();
+
+    if (t == boolean.class || t == Boolean.class)  return hasExplicit ? Boolean.parseBoolean(explicitDefault) : false;
+    if (t == int.class     || t == Integer.class)   return hasExplicit ? Integer.parseInt(explicitDefault) : 0;
+    if (t == double.class  || t == Double.class)    return hasExplicit ? Double.parseDouble(explicitDefault) : 0.0d;
+    if (t == String.class)                          return hasExplicit ? explicitDefault : null;
+    if (t == Duration.class)                        return hasExplicit ? DurationParsing.parse(explicitDefault) : null;
+    if (t.isEnum()) {
+      if (!hasExplicit) return null;
+      return parseEnumOrThrow(t, argName, explicitDefault);
+    }
+    // For complex types (Player etc.) just return null when omitted
+    return null;
   }
 }
